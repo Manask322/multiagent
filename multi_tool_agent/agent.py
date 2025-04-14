@@ -620,6 +620,51 @@ def github_explain_changes(owner: str, repo: str, base: str, head: str) -> dict:
             "error_message": f"Error analyzing changes: {str(e)}"
         }
 
+def summarize_document_from_url(document_url: str, summary_length: str = "medium") -> dict:
+    """Download a document from a URL and provide a summary of its content.
+    
+    Args:
+        document_url: URL of the document to download and summarize
+        summary_length: Length of summary - "short", "medium", or "long"
+        
+    Returns:
+        dict: Status and summary or error message
+    """
+    print(f"[DEBUG] summarize_document_from_url called with URL: {document_url}")
+    
+    try:
+        # Download the document
+        import requests
+        
+        print(f"[DEBUG] Downloading document from URL: {document_url}")
+        response = requests.get(document_url, stream=True)
+        
+        if response.status_code != 200:
+            return {
+                "status": "error",
+                "error_message": f"Failed to download document: HTTP {response.status_code}"
+            }
+        
+        # Get filename from URL
+        from urllib.parse import urlparse
+        filename = os.path.basename(urlparse(document_url).path)
+        if not filename:
+            filename = "downloaded_document"
+        
+        print(f"[DEBUG] Downloaded document, filename: {filename}")
+        
+        # Process and summarize
+        return document_summarize(response.content, filename, summary_length)
+        
+    except Exception as e:
+        print(f"[DEBUG] Error in summarize_document_from_url: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error_message": f"Error downloading or processing document: {str(e)}"
+        }
+
 # Create a LiteLLM client for Azure OpenAI
 azure_llm = LiteLlm(
     model="azure/razor-genie",  # Format: "azure/deployment_name"
@@ -952,48 +997,3 @@ def document_summarize(file_data: Union[BinaryIO, bytes], filename: str, summary
         "summary": summary_result["summary"],
         "summary_length": summary_length
     }
-
-def summarize_document_from_url(document_url: str, summary_length: str = "medium") -> dict:
-    """Download a document from a URL and provide a summary of its content.
-    
-    Args:
-        document_url: URL of the document to download and summarize
-        summary_length: Length of summary - "short", "medium", or "long"
-        
-    Returns:
-        dict: Status and summary or error message
-    """
-    print(f"[DEBUG] summarize_document_from_url called with URL: {document_url}")
-    
-    try:
-        # Download the document
-        import requests
-        
-        print(f"[DEBUG] Downloading document from URL: {document_url}")
-        response = requests.get(document_url, stream=True)
-        
-        if response.status_code != 200:
-            return {
-                "status": "error",
-                "error_message": f"Failed to download document: HTTP {response.status_code}"
-            }
-        
-        # Get filename from URL
-        from urllib.parse import urlparse
-        filename = os.path.basename(urlparse(document_url).path)
-        if not filename:
-            filename = "downloaded_document"
-        
-        print(f"[DEBUG] Downloaded document, filename: {filename}")
-        
-        # Process and summarize
-        return document_summarize(response.content, filename, summary_length)
-        
-    except Exception as e:
-        print(f"[DEBUG] Error in summarize_document_from_url: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "status": "error",
-            "error_message": f"Error downloading or processing document: {str(e)}"
-        }
