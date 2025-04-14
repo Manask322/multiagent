@@ -4,30 +4,11 @@ from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 import os
 import requests
-from typing import Optional, List, Dict, Any, Union, BinaryIO
-import tempfile
-import mimetypes
-from pathlib import Path
+from typing import Optional, List, Dict, Any
 
 # Set environment variables for Azure OpenAI
 os.environ["AZURE_OPENAI_ENDPOINT"] = "https://docs-search-aus-east.openai.azure.com"
 os.environ["AZURE_OPENAI_API_KEY"] = "e2c8b179c3a24127a0ab3b38509fb9b1"
-
-# Document handling libraries - you'll need to install these
-# pip install python-docx pypdf pdfplumber pytesseract Pillow
-try:
-    # PDF handling
-    import pypdf
-    import pdfplumber
-    # Word document handling
-    import docx
-    # Image handling
-    from PIL import Image
-    import pytesseract
-    DOCUMENT_LIBS_AVAILABLE = True
-except ImportError:
-    DOCUMENT_LIBS_AVAILABLE = False
-    print("[WARNING] Document processing libraries not available. Install with: pip install python-docx pypdf pdfplumber pytesseract Pillow")
 
 def get_weather(city: str) -> dict:
     """Retrieves the current weather report for a specified city.
@@ -620,51 +601,6 @@ def github_explain_changes(owner: str, repo: str, base: str, head: str) -> dict:
             "error_message": f"Error analyzing changes: {str(e)}"
         }
 
-def summarize_document_from_url(document_url: str, summary_length: str = "medium") -> dict:
-    """Download a document from a URL and provide a summary of its content.
-    
-    Args:
-        document_url: URL of the document to download and summarize
-        summary_length: Length of summary - "short", "medium", or "long"
-        
-    Returns:
-        dict: Status and summary or error message
-    """
-    print(f"[DEBUG] summarize_document_from_url called with URL: {document_url}")
-    
-    try:
-        # Download the document
-        import requests
-        
-        print(f"[DEBUG] Downloading document from URL: {document_url}")
-        response = requests.get(document_url, stream=True)
-        
-        if response.status_code != 200:
-            return {
-                "status": "error",
-                "error_message": f"Failed to download document: HTTP {response.status_code}"
-            }
-        
-        # Get filename from URL
-        from urllib.parse import urlparse
-        filename = os.path.basename(urlparse(document_url).path)
-        if not filename:
-            filename = "downloaded_document"
-        
-        print(f"[DEBUG] Downloaded document, filename: {filename}")
-        
-        # Process and summarize
-        return document_summarize(response.content, filename, summary_length)
-        
-    except Exception as e:
-        print(f"[DEBUG] Error in summarize_document_from_url: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "status": "error",
-            "error_message": f"Error downloading or processing document: {str(e)}"
-        }
-
 # Create a LiteLLM client for Azure OpenAI
 azure_llm = LiteLlm(
     model="azure/razor-genie",  # Format: "azure/deployment_name"
@@ -673,20 +609,18 @@ azure_llm = LiteLlm(
     api_version="2023-05-15"
 )
 
-# Create the agent with all tools including document summarization
+# Create the agent with all tools including GitHub tools
 root_agent = Agent(
     name="multi_tool_agent",
     model=azure_llm,
     description=(
-        "Agent to answer questions about the time, weather, GitHub information, "
-        "and document summarization."
+        "Agent to answer questions about the time, weather, and GitHub information."
     ),
     instruction=(
         "You are a helpful agent who can answer user questions about the time, weather, "
-        "provide information from GitHub, and summarize documents from URLs. "
-        "For GitHub queries, you can search for repositories, users, issues, "
-        "get repository information, and analyze code changes. "
-        "For documents, you can download and summarize content from URLs."
+        "and provide information from GitHub. For GitHub queries, you can search for repositories, "
+        "users, issues, get detailed information about specific repositories, "
+        "compare changes between commits, and explain code changes in natural language."
     ),
     tools=[
         get_weather, 
@@ -694,8 +628,7 @@ root_agent = Agent(
         github_search, 
         github_repo_info, 
         github_compare_commits, 
-        github_explain_changes,
-        summarize_document_from_url
+        github_explain_changes
     ],
 )
 
@@ -750,250 +683,3 @@ async def analyze_github_changes(owner: str, repo: str, base: str, head: str) ->
             "status": "error", 
             "error_message": f"Error during LLM analysis: {str(e)}"
         }
-
-def process_document(file_data: Union[BinaryIO, bytes], filename: str = None) -> dict:
-    """Process a document file and extract its text content.
-    
-    Args:
-        file_data: The document file data (file object or bytes)
-        filename: Original filename (used to determine file type)
-        
-    Returns:
-        dict: Status and extracted text or error message
-    """
-    print(f"[DEBUG] process_document called with filename: {filename}")
-    
-    if not DOCUMENT_LIBS_AVAILABLE:
-        return {
-            "status": "error",
-            "error_message": "Document processing libraries not installed. Install with: pip install python-docx pypdf pdfplumber pytesseract Pillow"
-        }
-    
-    # Create a temporary file to work with
-    try:
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            # Write data to the temp file
-            if hasattr(file_data, 'read'):
-                # It's a file-like object
-                temp_file.write(file_data.read())
-            else:
-                # It's bytes
-                temp_file.write(file_data)
-            
-            temp_file_path = temp_file.name
-            print(f"[DEBUG] Wrote temporary file to: {temp_file_path}")
-        
-        # Determine file type
-        if filename:
-            file_type = mimetypes.guess_type(filename)[0]
-            extension = Path(filename).suffix.lower()
-        else:
-            # Try to guess from content
-            file_type = None
-            extension = None
-            
-        print(f"[DEBUG] Detected file type: {file_type}, extension: {extension}")
-        
-        # Extract text based on file type
-        extracted_text = ""
-        
-        # PDF processing
-        if file_type == 'application/pdf' or extension in ['.pdf']:
-            print("[DEBUG] Processing as PDF")
-            
-            # Try pdfplumber first (better for text extraction)
-            try:
-                with pdfplumber.open(temp_file_path) as pdf:
-                    for page in pdf.pages:
-                        page_text = page.extract_text() or ""
-                        extracted_text += page_text + "\n\n"
-                
-                if not extracted_text.strip():
-                    raise Exception("No text extracted with pdfplumber")
-            except Exception as e:
-                print(f"[DEBUG] pdfplumber failed: {e}, trying pypdf")
-                
-                # Fallback to pypdf
-                with open(temp_file_path, 'rb') as file:
-                    pdf_reader = pypdf.PdfReader(file)
-                    for page in pdf_reader.pages:
-                        page_text = page.extract_text() or ""
-                        extracted_text += page_text + "\n\n"
-        
-        # Word document processing
-        elif file_type in ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'] or extension in ['.docx']:
-            print("[DEBUG] Processing as Word document")
-            doc = docx.Document(temp_file_path)
-            for para in doc.paragraphs:
-                extracted_text += para.text + "\n"
-        
-        # Text file processing
-        elif file_type in ['text/plain'] or extension in ['.txt', '.md', '.csv', '.json', '.xml', '.html']:
-            print("[DEBUG] Processing as text file")
-            with open(temp_file_path, 'r', encoding='utf-8', errors='replace') as file:
-                extracted_text = file.read()
-        
-        # Image processing with OCR
-        elif file_type and file_type.startswith('image/') or extension in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff']:
-            print("[DEBUG] Processing as image with OCR")
-            image = Image.open(temp_file_path)
-            extracted_text = pytesseract.image_to_string(image)
-        
-        else:
-            return {
-                "status": "error",
-                "error_message": f"Unsupported file type: {file_type or extension or 'Unknown'}"
-            }
-        
-        print(f"[DEBUG] Successfully extracted {len(extracted_text)} characters of text")
-        
-        # Cleanup temp file
-        os.unlink(temp_file_path)
-        
-        # Check if we got any text
-        if not extracted_text.strip():
-            return {
-                "status": "error",
-                "error_message": "No text could be extracted from the document"
-            }
-        
-        # Return the extracted text
-        return {
-            "status": "success",
-            "text": extracted_text,
-            "filename": filename,
-            "file_type": file_type,
-            "char_count": len(extracted_text)
-        }
-        
-    except Exception as e:
-        print(f"[DEBUG] Error processing document: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
-        # Cleanup temp file if it exists
-        try:
-            if 'temp_file_path' in locals():
-                os.unlink(temp_file_path)
-        except:
-            pass
-            
-        return {
-            "status": "error",
-            "error_message": f"Error processing document: {str(e)}"
-        }
-
-def summarize_document(text: str, filename: Optional[str] = None, summary_length: str = "medium") -> dict:
-    """Generate a summary of document text.
-    
-    Args:
-        text: The document text to summarize
-        filename: Original filename (optional, for context)
-        summary_length: Length of summary - "short", "medium", or "long"
-        
-    Returns:
-        dict: Status and summary or error message
-    """
-    print(f"[DEBUG] summarize_document called with text length: {len(text)}, summary_length: {summary_length}")
-    
-    try:
-        # Validate parameters
-        if not text or not text.strip():
-            return {
-                "status": "error",
-                "error_message": "No text provided for summarization"
-            }
-            
-        if summary_length not in ["short", "medium", "long"]:
-            summary_length = "medium"
-        
-        # Truncate if text is too long
-        max_text_length = 12000  # Most models can handle around 16K tokens
-        original_length = len(text)
-        
-        if len(text) > max_text_length:
-            print(f"[DEBUG] Text too long ({len(text)} chars), truncating to {max_text_length}")
-            text = text[:max_text_length] + "\n\n[Text truncated due to length...]"
-        
-        # Create a prompt for the LLM to summarize the text
-        file_context = f" from the file '{filename}'" if filename else ""
-        
-        # Different prompts based on summary length
-        if summary_length == "short":
-            prompt = (
-                f"Please provide a concise summary of the following text{file_context} in 3-5 sentences. "
-                f"Focus only on the key points:\n\n{text}"
-            )
-        elif summary_length == "medium":
-            prompt = (
-                f"Please summarize the following text{file_context} in a few paragraphs. "
-                f"Include the main points and key details:\n\n{text}"
-            )
-        else:  # long
-            prompt = (
-                f"Please provide a comprehensive summary of the following text{file_context}. "
-                f"Include all significant points, supporting details, and maintain the document's structure "
-                f"where relevant:\n\n{text}"
-            )
-        
-        print(f"[DEBUG] Created summary prompt of length {len(prompt)}")
-        
-        # Use the LiteLLM client to generate the summary
-        summary_response = azure_llm.generate_content(prompt)
-        
-        print(f"[DEBUG] Received summary response")
-        
-        # Return the summary
-        return {
-            "status": "success",
-            "summary": summary_response,
-            "original_text_length": original_length,
-            "truncated": original_length > max_text_length,
-            "summary_length_requested": summary_length
-        }
-        
-    except Exception as e:
-        print(f"[DEBUG] Error summarizing document: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "status": "error",
-            "error_message": f"Error summarizing document: {str(e)}"
-        }
-
-# Combined function for document upload and summarization
-def document_summarize(file_data: Union[BinaryIO, bytes], filename: str, summary_length: str = "medium") -> dict:
-    """Process a document and provide a summary of its content.
-    
-    Args:
-        file_data: The document file data (file object or bytes)
-        filename: Original filename
-        summary_length: Length of summary - "short", "medium", or "long"
-        
-    Returns:
-        dict: Status and summary or error message
-    """
-    print(f"[DEBUG] document_summarize called with filename: {filename}, summary_length: {summary_length}")
-    
-    # Process the document
-    process_result = process_document(file_data, filename)
-    
-    if process_result["status"] != "success":
-        return process_result
-    
-    # Summarize the extracted text
-    text = process_result["text"]
-    summary_result = summarize_document(text, filename, summary_length)
-    
-    if summary_result["status"] != "success":
-        return summary_result
-    
-    # Combine results
-    return {
-        "status": "success",
-        "filename": filename,
-        "file_type": process_result.get("file_type", "Unknown"),
-        "char_count": len(text),
-        "summary": summary_result["summary"],
-        "summary_length": summary_length
-    }
