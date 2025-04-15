@@ -601,6 +601,696 @@ def github_explain_changes(owner: str, repo: str, base: str, head: str) -> dict:
             "error_message": f"Error analyzing changes: {str(e)}"
         }
 
+def get_spinnaker_deployments(pipeline_config_id: Optional[str] = None, application: Optional[str] = None, limit: int = 5, statuses: Optional[str] = None) -> dict:
+    """Get deployment details from Spinnaker.
+    
+    Args:
+        pipeline_config_id (str, optional): Filter by pipeline configuration ID.
+        application (str, optional): Filter by application name.
+        limit (int, optional): Maximum number of deployments to return (default 5).
+        statuses (str, optional): Filter by execution statuses (comma-separated).
+        
+    Returns:
+        dict: Status and deployment information or error message.
+    """
+    print(f"[DEBUG] get_spinnaker_deployments called with: pipeline_config_id={pipeline_config_id}, application={application}, limit={limit}, statuses={statuses}")
+    
+    # Get Spinnaker API configuration 
+    spinnaker_api_url = os.environ.get("SPINNAKER_API_URL", "https://deploy-api.razorpay.com")
+    
+    # Set up headers based on the curl command
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://deploy.razorpay.com",
+        "Referer": "https://deploy.razorpay.com/",
+        "X-RateLimit-App": "deck",
+        "rzpctx-dev-serve-user": "credithub",
+        "x-pg-service": "pg-router"
+    }
+    
+    # Set up cookies (you may need to refresh these periodically)
+    cookies = {
+        "ab_user_id": "cc071617-5d9f-413d-a4ce-e2228cd525e3",
+        "additional-cache-params": "{\"isMobile\":false,\"isSafari\":false,\"countryCode\":\"IN\",\"isTransparentVideoNotSupported\":false,\"isBot\":false,\"host\":\"razorpay.com\",\"previewAsset\":\"\",\"preferenceCountryCode\":null}",
+        "visit_time_stamp": "1743562123017",
+        "hubspotutk": "9058335a8122f23e0b5945ac65e25009",
+        "__hssrc": "1",
+        "ajs_user_id": "GIoRgiKEkV89t8",
+        "ajs_anonymous_id": "c5d2a126-d94e-436c-a73f-63f0b54097e6",
+        "_fbp": "fb.1.1743760311133.326922372503041647",
+        "__hstc": "227020674.9058335a8122f23e0b5945ac65e25009.1743760310869.1744369287914.1744619954364.15",
+        "analytics_session_id": "1744619955081",
+        "analytics_session_id.last_access": "1744619955081",
+        "SESSION": "MTkxZmRlNzYtYTIxYi00M2U0LWIzYTgtMGFiN2I3NzY0MGZj"
+    }
+    
+    try:
+        # Determine which endpoint to use based on parameters provided
+        params = {"limit": limit}
+        
+        if statuses:
+            params["statuses"] = statuses
+            
+        if pipeline_config_id:
+            # Use executions endpoint with pipelineConfigIds filter
+            endpoint = f"{spinnaker_api_url}/executions"
+            params["pipelineConfigIds"] = pipeline_config_id
+            
+        elif application:
+            # Use application-specific pipelines endpoint
+            endpoint = f"{spinnaker_api_url}/applications/{application}/pipelines"
+        else:
+            # Default to general executions endpoint
+            endpoint = f"{spinnaker_api_url}/executions"
+        
+        print(f"[DEBUG] Requesting Spinnaker deployments from: {endpoint}")
+        print(f"[DEBUG] With params: {params}")
+        
+        response = requests.get(endpoint, headers=headers, cookies=cookies, params=params)
+        status_code = response.status_code
+        print(f"[DEBUG] Spinnaker API response status: {status_code}")
+        
+        if status_code != 200:
+            error_msg = f"Spinnaker API error: Status {status_code}"
+            try:
+                error_details = response.json()
+                error_msg += f" - {error_details.get('message', '')}"
+            except:
+                error_msg += f" - {response.text[:200]}"
+            
+            return {
+                "status": "error",
+                "error_message": error_msg
+            }
+        
+        # Parse the response data
+        deployments_data = response.json()
+        
+        if not isinstance(deployments_data, list):
+            return {
+                "status": "error",
+                "error_message": "Unexpected response format from Spinnaker API"
+            }
+        
+        # Format the deployments for easier consumption
+        deployments = []
+        for execution in deployments_data:
+            try:
+                # Extract key deployment information
+                deployment_info = {
+                    "id": execution.get("id"),
+                    "name": execution.get("name"),
+                    "application": execution.get("application"),
+                    "status": execution.get("status"),
+                    "start_time": execution.get("startTime"),
+                    "end_time": execution.get("endTime"),
+                    "build_time": (execution.get("endTime", 0) - execution.get("startTime", 0)) / 1000 if execution.get("endTime") else None,
+                    "pipeline_config_id": execution.get("pipelineConfigId"),
+                    "trigger": execution.get("trigger", {})
+                }
+                
+                # Add stages information (simplified)
+                stages = []
+                for stage in execution.get("stages", []):
+                    stage_info = {
+                        "id": stage.get("id"),
+                        "name": stage.get("name"),
+                        "status": stage.get("status"),
+                        "type": stage.get("type"),
+                        "refId": stage.get("refId"),
+                        "start_time": stage.get("startTime"),
+                        "end_time": stage.get("endTime")
+                    }
+                    stages.append(stage_info)
+                
+                deployment_info["stages"] = stages
+                deployments.append(deployment_info)
+                
+            except Exception as e:
+                print(f"[DEBUG] Error processing deployment: {str(e)}")
+                continue
+        
+        return {
+            "status": "success",
+            "total_count": len(deployments_data),
+            "deployments": deployments
+        }
+    
+    except requests.exceptions.RequestException as e:
+        print(f"[DEBUG] RequestException: {str(e)}")
+        return {
+            "status": "error",
+            "error_message": f"Spinnaker API error: {str(e)}"
+        }
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}"
+        }
+
+def get_spinnaker_deployment_details(execution_id: str) -> dict:
+    """Get detailed information about a specific Spinnaker deployment/execution.
+    
+    Args:
+        execution_id (str): The ID of the Spinnaker execution/deployment.
+        
+    Returns:
+        dict: Status and detailed deployment information or error message.
+    """
+    print(f"[DEBUG] get_spinnaker_deployment_details called with execution_id: {execution_id}")
+    
+    # Get Spinnaker API configuration
+    spinnaker_api_url = os.environ.get("SPINNAKER_API_URL", "https://deploy-api.razorpay.com")
+    
+    # Set up headers based on the curl command
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://deploy.razorpay.com",
+        "Referer": "https://deploy.razorpay.com/",
+        "X-RateLimit-App": "deck",
+        "rzpctx-dev-serve-user": "credithub",
+        "x-pg-service": "pg-router"
+    }
+    
+    # Set up cookies (you may need to refresh these periodically)
+    cookies = {
+        "ab_user_id": "cc071617-5d9f-413d-a4ce-e2228cd525e3",
+        "additional-cache-params": "{\"isMobile\":false,\"isSafari\":false,\"countryCode\":\"IN\",\"isTransparentVideoNotSupported\":false,\"isBot\":false,\"host\":\"razorpay.com\",\"previewAsset\":\"\",\"preferenceCountryCode\":null}",
+        "visit_time_stamp": "1743562123017",
+        "hubspotutk": "9058335a8122f23e0b5945ac65e25009",
+        "__hssrc": "1",
+        "ajs_user_id": "GIoRgiKEkV89t8",
+        "ajs_anonymous_id": "c5d2a126-d94e-436c-a73f-63f0b54097e6",
+        "_fbp": "fb.1.1743760311133.326922372503041647",
+        "__hstc": "227020674.9058335a8122f23e0b5945ac65e25009.1743760310869.1744369287914.1744619954364.15",
+        "analytics_session_id": "1744619955081",
+        "analytics_session_id.last_access": "1744619955081",
+        "SESSION": "MTkxZmRlNzYtYTIxYi00M2U0LWIzYTgtMGFiN2I3NzY0MGZj"
+    }
+    
+    try:
+        # Get execution details using the pipelines endpoint
+        execution_url = f"{spinnaker_api_url}/pipelines/{execution_id}"
+        print(f"[DEBUG] Requesting execution details from: {execution_url}")
+        
+        response = requests.get(execution_url, headers=headers, cookies=cookies)
+        status_code = response.status_code
+        print(f"[DEBUG] Execution details response status: {status_code}")
+        
+        if status_code != 200:
+            return {
+                "status": "error",
+                "error_message": f"Execution not found or error: Status {status_code}"
+            }
+        
+        execution_data = response.json()
+        
+        # Format the detailed execution information
+        execution_details = {
+            "id": execution_data.get("id"),
+            "name": execution_data.get("name"),
+            "application": execution_data.get("application"),
+            "status": execution_data.get("status"),
+            "start_time": execution_data.get("startTime"),
+            "end_time": execution_data.get("endTime"),
+            "build_time_ms": execution_data.get("buildTime"),
+            "canceled": execution_data.get("canceled", False),
+            "cancellation_reason": execution_data.get("canceledBy"),
+            "pipeline_config_id": execution_data.get("pipelineConfigId"),
+            "authentication": execution_data.get("authentication", {}),
+            "trigger": execution_data.get("trigger", {})
+        }
+        
+        # Process stages in detail
+        stages = []
+        for stage in execution_data.get("stages", []):
+            stage_info = {
+                "id": stage.get("id"),
+                "refId": stage.get("refId"),
+                "name": stage.get("name"),
+                "status": stage.get("status"),
+                "type": stage.get("type"),
+                "start_time": stage.get("startTime"),
+                "end_time": stage.get("endTime"),
+                "requisite_stage_ref_ids": stage.get("requisiteStageRefIds", []),
+                "sync_stage": stage.get("syntheticStageOwner", ""),
+                "context": {k: v for k, v in stage.get("context", {}).items() if not isinstance(v, dict) and not isinstance(v, list)}
+            }
+            
+            # Extract task details if available
+            tasks = []
+            for task in stage.get("tasks", []):
+                task_info = {
+                    "id": task.get("id"),
+                    "name": task.get("name"),
+                    "status": task.get("status"),
+                    "start_time": task.get("startTime"),
+                    "end_time": task.get("endTime"),
+                    "message": task.get("message", "")
+                }
+                tasks.append(task_info)
+            
+            if tasks:
+                stage_info["tasks"] = tasks
+            
+            stages.append(stage_info)
+        
+        execution_details["stages"] = stages
+        
+        # Get pipeline logs if available
+        try:
+            logs_url = f"{spinnaker_api_url}/pipelines/{execution_id}/logs"
+            logs_response = requests.get(logs_url, headers=headers, cookies=cookies)
+            if logs_response.status_code == 200:
+                logs_data = logs_response.json()
+                execution_details["logs"] = logs_data
+        except Exception as e:
+            print(f"[DEBUG] Error fetching logs: {str(e)}")
+        
+        return {
+            "status": "success",
+            "execution_details": execution_details
+        }
+    
+    except requests.exceptions.RequestException as e:
+        print(f"[DEBUG] RequestException: {str(e)}")
+        return {
+            "status": "error",
+            "error_message": f"Spinnaker API error: {str(e)}"
+        }
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}"
+        }
+
+def cancel_spinnaker_pipeline(execution_id: str, reason: str = "") -> dict:
+    """Cancel a running Spinnaker pipeline execution.
+    
+    Args:
+        execution_id (str): The ID of the pipeline execution to cancel.
+        reason (str, optional): Reason for cancellation.
+        
+    Returns:
+        dict: Status of the cancellation operation.
+    """
+    print(f"[DEBUG] cancel_spinnaker_pipeline called with: execution_id={execution_id}, reason={reason}")
+    
+    # Get Spinnaker API configuration
+    spinnaker_api_url = os.environ.get("SPINNAKER_API_URL", "https://deploy-api.razorpay.com")
+    
+    # Set up headers based on the curl command
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://deploy.razorpay.com",
+        "Referer": "https://deploy.razorpay.com/",
+        "X-RateLimit-App": "deck",
+        "rzpctx-dev-serve-user": "credithub",
+        "x-pg-service": "pg-router",
+        "Content-Type": "application/json"
+    }
+    
+    # Set up cookies (you may need to refresh these periodically)
+    cookies = {
+        "ab_user_id": "cc071617-5d9f-413d-a4ce-e2228cd525e3",
+        "additional-cache-params": "{\"isMobile\":false,\"isSafari\":false,\"countryCode\":\"IN\",\"isTransparentVideoNotSupported\":false,\"isBot\":false,\"host\":\"razorpay.com\",\"previewAsset\":\"\",\"preferenceCountryCode\":null}",
+        "visit_time_stamp": "1743562123017",
+        "hubspotutk": "9058335a8122f23e0b5945ac65e25009",
+        "__hssrc": "1",
+        "ajs_user_id": "GIoRgiKEkV89t8",
+        "ajs_anonymous_id": "c5d2a126-d94e-436c-a73f-63f0b54097e6",
+        "_fbp": "fb.1.1743760311133.326922372503041647",
+        "__hstc": "227020674.9058335a8122f23e0b5945ac65e25009.1743760310869.1744369287914.1744619954364.15",
+        "analytics_session_id": "1744619955081",
+        "analytics_session_id.last_access": "1744619955081",
+        "SESSION": "MTkxZmRlNzYtYTIxYi00M2U0LWIzYTgtMGFiN2I3NzY0MGZj"
+    }
+    
+    try:
+        # Cancel pipeline execution
+        params = {}
+        if reason:
+            params["reason"] = reason
+            
+        cancel_url = f"{spinnaker_api_url}/pipelines/{execution_id}/cancel"
+        print(f"[DEBUG] Requesting pipeline cancellation from: {cancel_url}")
+        
+        response = requests.put(cancel_url, headers=headers, cookies=cookies, params=params)
+        status_code = response.status_code
+        print(f"[DEBUG] Pipeline cancellation response status: {status_code}")
+        
+        if status_code not in [200, 202]:
+            error_msg = f"Pipeline cancellation error: Status {status_code}"
+            try:
+                error_details = response.json()
+                error_msg += f" - {error_details.get('message', '')}"
+            except:
+                error_msg += f" - {response.text[:200]}"
+            
+            return {
+                "status": "error",
+                "error_message": error_msg
+            }
+        
+        return {
+            "status": "success",
+            "message": f"Pipeline execution {execution_id} has been canceled successfully"
+        }
+    
+    except requests.exceptions.RequestException as e:
+        print(f"[DEBUG] RequestException: {str(e)}")
+        return {
+            "status": "error",
+            "error_message": f"Spinnaker API error: {str(e)}"
+        }
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}"
+        }
+
+def pause_resume_spinnaker_pipeline(execution_id: str, action: str) -> dict:
+    """Pause or resume a Spinnaker pipeline execution.
+    
+    Args:
+        execution_id (str): The ID of the pipeline execution to pause or resume.
+        action (str): Either 'pause' or 'resume'.
+        
+    Returns:
+        dict: Status of the operation.
+    """
+    if action not in ['pause', 'resume']:
+        return {
+            "status": "error",
+            "error_message": f"Invalid action: {action}. Must be 'pause' or 'resume'."
+        }
+    
+    print(f"[DEBUG] pause_resume_spinnaker_pipeline called with: execution_id={execution_id}, action={action}")
+    
+    # Get Spinnaker API configuration
+    spinnaker_api_url = os.environ.get("SPINNAKER_API_URL", "https://deploy-api.razorpay.com")
+    
+    # Set up headers based on the curl command
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://deploy.razorpay.com",
+        "Referer": "https://deploy.razorpay.com/",
+        "X-RateLimit-App": "deck",
+        "rzpctx-dev-serve-user": "credithub",
+        "x-pg-service": "pg-router",
+        "Content-Type": "application/json"
+    }
+    
+    # Set up cookies (you may need to refresh these periodically)
+    cookies = {
+        "ab_user_id": "cc071617-5d9f-413d-a4ce-e2228cd525e3",
+        "additional-cache-params": "{\"isMobile\":false,\"isSafari\":false,\"countryCode\":\"IN\",\"isTransparentVideoNotSupported\":false,\"isBot\":false,\"host\":\"razorpay.com\",\"previewAsset\":\"\",\"preferenceCountryCode\":null}",
+        "visit_time_stamp": "1743562123017",
+        "hubspotutk": "9058335a8122f23e0b5945ac65e25009",
+        "__hssrc": "1",
+        "ajs_user_id": "GIoRgiKEkV89t8",
+        "ajs_anonymous_id": "c5d2a126-d94e-436c-a73f-63f0b54097e6",
+        "_fbp": "fb.1.1743760311133.326922372503041647",
+        "__hstc": "227020674.9058335a8122f23e0b5945ac65e25009.1743760310869.1744369287914.1744619954364.15",
+        "analytics_session_id": "1744619955081",
+        "analytics_session_id.last_access": "1744619955081",
+        "SESSION": "MTkxZmRlNzYtYTIxYi00M2U0LWIzYTgtMGFiN2I3NzY0MGZj"
+    }
+    
+    try:
+        # Pause or resume pipeline execution
+        action_url = f"{spinnaker_api_url}/pipelines/{execution_id}/{action}"
+        print(f"[DEBUG] Requesting pipeline {action} from: {action_url}")
+        
+        response = requests.put(action_url, headers=headers, cookies=cookies)
+        status_code = response.status_code
+        print(f"[DEBUG] Pipeline {action} response status: {status_code}")
+        
+        if status_code not in [200, 202]:
+            error_msg = f"Pipeline {action} error: Status {status_code}"
+            try:
+                error_details = response.json()
+                error_msg += f" - {error_details.get('message', '')}"
+            except:
+                error_msg += f" - {response.text[:200]}"
+            
+            return {
+                "status": "error",
+                "error_message": error_msg
+            }
+        
+        return {
+            "status": "success",
+            "message": f"Pipeline execution {execution_id} has been {action}d successfully"
+        }
+    
+    except requests.exceptions.RequestException as e:
+        print(f"[DEBUG] RequestException: {str(e)}")
+        return {
+            "status": "error",
+            "error_message": f"Spinnaker API error: {str(e)}"
+        }
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}"
+        }
+
+def get_spinnaker_applications() -> dict:
+    """Get a list of all applications in Spinnaker.
+    
+    Returns:
+        dict: Status and list of applications or error message.
+    """
+    print(f"[DEBUG] get_spinnaker_applications called")
+    
+    # Get Spinnaker API configuration
+    spinnaker_api_url = os.environ.get("SPINNAKER_API_URL", "https://deploy-api.razorpay.com")
+    
+    # Set up headers based on the curl command
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://deploy.razorpay.com",
+        "Referer": "https://deploy.razorpay.com/",
+        "X-RateLimit-App": "deck",
+        "rzpctx-dev-serve-user": "credithub",
+        "x-pg-service": "pg-router"
+    }
+    
+    # Set up cookies (you may need to refresh these periodically)
+    cookies = {
+        "ab_user_id": "cc071617-5d9f-413d-a4ce-e2228cd525e3",
+        "additional-cache-params": "{\"isMobile\":false,\"isSafari\":false,\"countryCode\":\"IN\",\"isTransparentVideoNotSupported\":false,\"isBot\":false,\"host\":\"razorpay.com\",\"previewAsset\":\"\",\"preferenceCountryCode\":null}",
+        "visit_time_stamp": "1743562123017",
+        "hubspotutk": "9058335a8122f23e0b5945ac65e25009",
+        "__hssrc": "1",
+        "ajs_user_id": "GIoRgiKEkV89t8",
+        "ajs_anonymous_id": "c5d2a126-d94e-436c-a73f-63f0b54097e6",
+        "_fbp": "fb.1.1743760311133.326922372503041647",
+        "__hstc": "227020674.9058335a8122f23e0b5945ac65e25009.1743760310869.1744369287914.1744619954364.15",
+        "analytics_session_id": "1744619955081",
+        "analytics_session_id.last_access": "1744619955081",
+        "SESSION": "MTkxZmRlNzYtYTIxYi00M2U0LWIzYTgtMGFiN2I3NzY0MGZj"
+    }
+    
+    try:
+        # Get all applications
+        apps_url = f"{spinnaker_api_url}/applications"
+        print(f"[DEBUG] Requesting applications from: {apps_url}")
+        
+        response = requests.get(apps_url, headers=headers, cookies=cookies)
+        status_code = response.status_code
+        print(f"[DEBUG] Applications response status: {status_code}")
+        
+        if status_code != 200:
+            error_msg = f"Applications request error: Status {status_code}"
+            try:
+                error_details = response.json()
+                error_msg += f" - {error_details.get('message', '')}"
+            except:
+                error_msg += f" - {response.text[:200]}"
+            
+            return {
+                "status": "error",
+                "error_message": error_msg
+            }
+        
+        applications_data = response.json()
+        
+        if not isinstance(applications_data, list):
+            return {
+                "status": "error",
+                "error_message": "Unexpected response format from Spinnaker API"
+            }
+        
+        # Format application info
+        applications = []
+        for app in applications_data:
+            app_info = {
+                "name": app.get("name"),
+                "email": app.get("email"),
+                "description": app.get("description", ""),
+                "cloud_providers": app.get("cloudProviders", []),
+                "created_at": app.get("createTs", ""),
+                "updated_at": app.get("updateTs", "")
+            }
+            applications.append(app_info)
+        
+        return {
+            "status": "success",
+            "total_count": len(applications),
+            "applications": applications
+        }
+    
+    except requests.exceptions.RequestException as e:
+        print(f"[DEBUG] RequestException: {str(e)}")
+        return {
+            "status": "error",
+            "error_message": f"Spinnaker API error: {str(e)}"
+        }
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}"
+        }
+
+def get_spinnaker_pipeline_configs(application: str) -> dict:
+    """Get pipeline configurations for a specific application.
+    
+    Args:
+        application (str): The name of the application.
+        
+    Returns:
+        dict: Status and pipeline configurations or error message.
+    """
+    print(f"[DEBUG] get_spinnaker_pipeline_configs called with application: {application}")
+    
+    # Get Spinnaker API configuration
+    spinnaker_api_url = os.environ.get("SPINNAKER_API_URL", "https://deploy-api.razorpay.com")
+    
+    # Set up headers based on the curl command
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Origin": "https://deploy.razorpay.com",
+        "Referer": "https://deploy.razorpay.com/",
+        "X-RateLimit-App": "deck",
+        "rzpctx-dev-serve-user": "credithub",
+        "x-pg-service": "pg-router"
+    }
+    
+    # Set up cookies (you may need to refresh these periodically)
+    cookies = {
+        "ab_user_id": "cc071617-5d9f-413d-a4ce-e2228cd525e3",
+        "additional-cache-params": "{\"isMobile\":false,\"isSafari\":false,\"countryCode\":\"IN\",\"isTransparentVideoNotSupported\":false,\"isBot\":false,\"host\":\"razorpay.com\",\"previewAsset\":\"\",\"preferenceCountryCode\":null}",
+        "visit_time_stamp": "1743562123017",
+        "hubspotutk": "9058335a8122f23e0b5945ac65e25009",
+        "__hssrc": "1",
+        "ajs_user_id": "GIoRgiKEkV89t8",
+        "ajs_anonymous_id": "c5d2a126-d94e-436c-a73f-63f0b54097e6",
+        "_fbp": "fb.1.1743760311133.326922372503041647",
+        "__hstc": "227020674.9058335a8122f23e0b5945ac65e25009.1743760310869.1744369287914.1744619954364.15",
+        "analytics_session_id": "1744619955081",
+        "analytics_session_id.last_access": "1744619955081",
+        "SESSION": "MTkxZmRlNzYtYTIxYi00M2U0LWIzYTgtMGFiN2I3NzY0MGZj"
+    }
+    
+    try:
+        # Get pipeline configs for application
+        configs_url = f"{spinnaker_api_url}/applications/{application}/pipelineConfigs"
+        print(f"[DEBUG] Requesting pipeline configs from: {configs_url}")
+        
+        response = requests.get(configs_url, headers=headers, cookies=cookies)
+        status_code = response.status_code
+        print(f"[DEBUG] Pipeline configs response status: {status_code}")
+        
+        if status_code != 200:
+            error_msg = f"Pipeline configs request error: Status {status_code}"
+            try:
+                error_details = response.json()
+                error_msg += f" - {error_details.get('message', '')}"
+            except:
+                error_msg += f" - {response.text[:200]}"
+            
+            return {
+                "status": "error",
+                "error_message": error_msg
+            }
+        
+        configs_data = response.json()
+        
+        if not isinstance(configs_data, list):
+            return {
+                "status": "error",
+                "error_message": "Unexpected response format from Spinnaker API"
+            }
+        
+        # Format pipeline config info
+        pipeline_configs = []
+        for config in configs_data:
+            # Extract basic pipeline config info
+            config_info = {
+                "id": config.get("id"),
+                "name": config.get("name"),
+                "application": config.get("application"),
+                "description": config.get("description", ""),
+                "updated_at": config.get("updateTs"),
+                "created_at": config.get("createTs"),
+                "index": config.get("index"),
+                "disabled": config.get("disabled", False),
+                "keep_waiting_pipelines": config.get("keepWaitingPipelines", False),
+                "limit_concurrent": config.get("limitConcurrent", False),
+                "trigger_types": [trigger.get("type") for trigger in config.get("triggers", [])]
+            }
+            
+            # Get number of stages
+            stages = config.get("stages", [])
+            config_info["stage_count"] = len(stages)
+            config_info["stage_types"] = [stage.get("type") for stage in stages]
+            
+            pipeline_configs.append(config_info)
+        
+        return {
+            "status": "success",
+            "total_count": len(pipeline_configs),
+            "pipeline_configs": pipeline_configs
+        }
+    
+    except requests.exceptions.RequestException as e:
+        print(f"[DEBUG] RequestException: {str(e)}")
+        return {
+            "status": "error",
+            "error_message": f"Spinnaker API error: {str(e)}"
+        }
+    except Exception as e:
+        print(f"[DEBUG] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}"
+        }
+
 # Create a LiteLLM client for Azure OpenAI
 azure_llm = LiteLlm(
     model="azure/razor-genie",  # Format: "azure/deployment_name"
@@ -614,13 +1304,15 @@ root_agent = Agent(
     name="multi_tool_agent",
     model=azure_llm,
     description=(
-        "Agent to answer questions about the time, weather, and GitHub information."
+        "Agent to answer questions about the time, weather, GitHub information, and Spinnaker deployments."
     ),
     instruction=(
         "You are a helpful agent who can answer user questions about the time, weather, "
-        "and provide information from GitHub. For GitHub queries, you can search for repositories, "
-        "users, issues, get detailed information about specific repositories, "
-        "compare changes between commits, and explain code changes in natural language."
+        "provide information from GitHub, and fetch deployment details from Spinnaker. "
+        "For GitHub queries, you can search for repositories, users, issues, get detailed information "
+        "about specific repositories, compare changes between commits, and explain code changes in natural language. "
+        "For Spinnaker queries, you can retrieve deployment information and execution details from "
+        "the Razorpay deployment system."
     ),
     tools=[
         get_weather, 
@@ -628,7 +1320,13 @@ root_agent = Agent(
         github_search, 
         github_repo_info, 
         github_compare_commits, 
-        github_explain_changes
+        github_explain_changes,
+        get_spinnaker_deployments,
+        get_spinnaker_deployment_details,
+        cancel_spinnaker_pipeline,
+        pause_resume_spinnaker_pipeline,
+        get_spinnaker_applications,
+        get_spinnaker_pipeline_configs
     ],
 )
 
